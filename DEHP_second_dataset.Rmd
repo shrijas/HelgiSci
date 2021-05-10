@@ -1,0 +1,310 @@
+---
+title: "DEHP_second_dataset"
+author: "Shrija Srinivasan"
+date: "4/24/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+BiocManager::install()
+
+## Downloading the necessary packages to make maEndToEnd work, installing the devtools and remote packages
+install.packages("devtools")
+#devtools::install_github("r-lib/remotes")
+#packageVersion("remotes") # has to be 1.1.1.9000 or later
+
+#Installing remotes from github
+#remotes::install_github("b-klaus/maEndToEnd", ref="master")
+
+# Installing WCGNA for correlation
+BiocManager::install("WCGNA")
+BiocManager::install("GenomicRanges")
+BiocManager::install("SummarizedExperiment")
+BiocManager::install("DESeq2")
+BiocManager::install("tidyverse")
+BiocManager::install("data.table")
+
+# The following initializes usage of Bioc devel
+BiocManager::install("AnnotationDbi")
+
+# The following initializes usage of Bioc devel
+BiocManager::install("ragene11sttranscriptcluster.db")
+BiocManager::install("ggplot")
+BiocManager::install("apeglm")
+BiocManager::install("GEOquery")
+BiocManager::install("edgeR")
+BiocManager::install("Glimma")
+BiocManager::install("org.Mm.eg.db")
+BiocManager::install("biomaRt")
+BiocManager::install("ReactomePA")
+#BiocManager::install.packages("stringr")
+
+## Calling out the library functions
+# General Bioconductor packages
+library(Biobase)
+library(oligoClasses)
+
+# Annotation and data import packages
+library(devtools)
+library(remotes)
+#suppressPackageStartupMessages({library("maEndToEnd")})
+library(data.table)
+library(ArrayExpress)
+library(limma)
+library(Glimma)
+library(edgeR)
+library("AnnotationDbi")
+library("org.Mm.eg.db")
+library(GEOquery)
+library(pd.hugene.1.0.st.v1)
+library(stringr)
+library(ggrepel)
+
+# Quality control and pre-processing packages
+library(limma)
+library(umap)
+library(topGO)
+library(ReactomePA)
+library(clusterProfiler)
+#library(tidyverse)
+library(edgeR)
+library(DESeq2)
+library(apeglm)
+
+# Plotting and color options packages
+library(ggplot2)
+library(geneplotter)
+library(RColorBrewer)
+library(pheatmap)
+
+
+# Formatting/documentation packages
+library(dplyr)
+library(tidyr)
+
+# Helpers
+library(stringr)
+library(matrixStats)
+library(genefilter)
+library(statmod)
+library(biomaRt)
+library(ReactomePA)
+library(topGO)
+library(enrichplot)
+
+#Downloading raw data from GEO dataset
+raw_data_dir <- tempdir()
+if (!dir.exists(raw_data_dir)) {
+    dir.create(raw_data_dir)
+}
+
+
+#Downloading the file
+gse<- getGEO("GSE14920",GSEMatrix = TRUE)
+gse <- gse[[1]]
+
+#Checking for any supplementary files for the DEHP data
+#filepaths <- getGEOSuppFiles("GSM461976")
+#filepaths
+head(pData(gse[1])[, 1:3])
+m1 <- exprs(gse)
+raw_data <- subset(gse, !is.na(gse))
+
+#Quality control of the raw data
+exprs_data <- exprs(raw_data)
+exprs_data <- na.omit(exprs_data)
+metadata <- pData(raw_data)
+metadata <- na.omit(metadata)
+summary(exprs_data)
+
+# Check if the data is log2 transformed or not (Checking individual datasets):
+oligo::boxplot(exprs_data, target="core", main ="Boxplot of log2-intensities for the raw data")
+
+## log2 transformation- using quantile normalisation
+qx <- as.numeric(quantile(exprs_data))
+LogC <- (qx[5] > 100) ||
+          (qx[6]-qx[1] > 50 && qx[2] > 0)
+if (LogC) { exprs_data[which(exprs_data <= 0)] <- NaN
+  exprs_data <- log2(exprs_data) }
+title <- paste ("GSE14920", "/", annotation(gse), sep ="")
+boxplot(exprs_data, boxwex=0.7, notch=T, main=title, outline=FALSE, las=2)
+
+
+#PCA plot
+PCA_raw <- prcomp(t(exprs_data),retx=TRUE)
+cbind(metadata, PCA_raw$x) %>% ggplot(aes(x = PC1, y=PC2, col=characteristics_ch1.3,label=paste(title))) + geom_point() + geom_text_repel() 
+
+#Considering the 10% most variable 
+percentVar <- round(100*PCA_raw$sdev^2/sum(PCA_raw$sdev^2),1)
+sd_ratio <- sqrt(percentVar[2] / percentVar[1])
+
+# Plotting the PCA (original data)
+dataGG <- data.frame(PC1 = PCA_raw$x[,1], PC2 = PCA_raw$x[,2],
+                    Variation = metadata$characteristics_ch1.1,
+                    Dose = metadata$characteristics_ch1.4,
+                    SourceName = metadata$title)
+ggplot(dataGG, aes(PC1, PC2)) + geom_point(aes(shape = Variation, colour= Dose))+ ggtitle("PCA plot of the calibrated expression data (DEHP- GSE14920)")+ xlab(paste0("PC1 (44%)"))+ ylab(paste0("PC2 (41%)"))+ theme(plot.title = element_text(hjust = 0.5))
+
+#Heatmap
+sampleInfo <- dplyr::select(metadata, title,characteristics_ch1.4)
+corMatrix <- cor(exprs_data,use="c")
+pheatmap(corMatrix)
+
+# Heatmap by adding features and characteristics
+rownames(sampleInfo)
+colnames(corMatrix)
+rownames(sampleInfo) <- colnames(corMatrix)
+pheatmap(corMatrix, annotation_col=sampleInfo) 
+
+
+features <- fData(gse)
+features <- na.omit(features)
+View(features)
+setdiff(rownames(exprs_data),features$ID)
+
+#Remove row 105 and 396 since the feature data and exprs data doesnt match
+rownames_remove <- c(setdiff(rownames(exprs_data),features$ID))
+exprs_data <- exprs_data[!(row.names(exprs_data) %in% rownames_remove), ]
+
+# After looking at the features data, select the columns I want to keep
+features <- dplyr::select(features, Symbol,Gene_Name, GENE_ID, Type)
+full_output <- cbind(features, exprs_data)
+#write.csv(full_output, "gse14920_full_output.csv")
+
+# LIMMA model
+sampleInfo$characteristics_ch1.4
+design <- model.matrix(~0+ metadata$characteristics_ch1.4)
+
+#Renaming the column to make it easier to understand
+colnames(design) <- c("noexposure","lowdoseDEHP", "highdoseDEHP")
+
+# Calculate median expression level
+cutoff <- median(exprs_data)
+
+# TRUE or FALSE for whether each gene is "expressed" in each sample
+is_expressed <- exprs_data > cutoff
+
+# Let's identify those genes that are present in more than 2 samples
+keep <- rowSums(is_expressed) >2
+
+# To verify the number of genes removed in the process
+table(keep)
+
+#Subset of only expressed genes
+gse <- gse[keep,]
+
+fit <- lmFit(exprs_data, design)
+head(fit$coefficients)
+
+# Defining contrasts
+contrasts <- makeContrasts(noexposure - lowdoseDEHP - highdoseDEHP, levels=design)
+fit2 <- contrasts.fit(fit, contrasts)
+fit2 <- eBayes(fit2)
+
+# To find out how many genes are differentially expressed overall
+decideTests(fit2)
+table(decideTests(fit2))
+
+full_results <- topTable(fit2, number=Inf)
+full_results <- tibble::rownames_to_column(full_results,"ID")
+ggplot(full_results,aes(x = logFC, y=-log(P.Value))) + geom_point()
+
+#Merge full_ouput "Symbol" column with full_results(fit2) table
+full_output <- setDT(full_output, keep.rownames = TRUE)[]
+colnames(full_output)[1] <- "ID"
+
+#Taking Symbol names and merging it in full_results
+full_results <- merge(x = full_results,y = full_output[,c("ID", "Symbol")],by="ID")
+
+# Removing duplicates based on Symbol column
+full_results <- full_results[!duplicated(full_results$Symbol),]
+rownames(full_results) <-full_results$Symbol
+
+## Volcano Plot
+p_cutoff <- 0.05
+fc_cutoff <- 1
+
+topN <- 20
+
+full_results %>% 
+  mutate(Significant = adj.P.Val < p_cutoff, abs(logFC) > fc_cutoff ) %>% 
+  mutate(Rank = 1:n(), Label = ifelse(Rank < topN, Symbol,"")) %>% 
+  ggplot(aes(x = logFC, y = -log(P.Value), col=Significant,label=Label)) + geom_point() + geom_text_repel(col="black")
+
+# Top20 genes for illustration
+topN <- 20
+##
+ids_of_interest <- mutate(full_results, Rank = 1:n()) %>% 
+  filter(Rank < topN) %>% 
+  pull(ID)
+
+gene_names <- mutate(full_results, Rank = 1:n()) %>% 
+  filter(Rank < topN) %>% 
+  pull(Symbol) 
+
+gene_matrix <- exprs_data[ids_of_interest,]
+pheatmap(gene_matrix,
+     labels_row = gene_names)
+
+pheatmap(gene_matrix,
+     labels_row = gene_names,
+     scale="row")
+
+
+
+#Reactome Pathway Enrichment
+
+listAttributes(ensembl
+)
+genes_fullresults <- subset(full_results, adj.P.Val < 0.1)$Symbol
+ensembl <- useEnsembl(biomart = "ensembl",mirror = "useast")
+ensembl <- useDataset("mmusculus_gene_ensembl", mart = ensembl)
+ensembl <- useMart("ENSEMBL_MART_ENSEMBL", dataset = "mmusculus_gene_ensembl")
+ids <- getBM(attributes = c("ensembl_gene_id", 'entrezgene_id', 'entrezgene_accession','external_gene_name'), values = list(full_results$Symbol), mart = ensembl)
+ids$Symbol <- ids$external_gene_name
+
+# Merge data using common gene names between ENSEMBL ids and full results table
+full_results <- merge(full_results,ids, by ="Symbol")
+
+# KEGG Pathway
+
+library(clusterProfiler)
+kk <- enrichKEGG(gene = full_results$entrezgene_id,
+                 organism = 'mmu',
+                 pvalueCutoff = 0.05)
+
+barplot(kk)
+
+options(connectionObserver = NULL)
+reactome_enrich <- enrichPathway(full_results$entrezgene_id,organism = "mouse", pvalueCutoff = 0.05, pAdjustMethod = "BH", qvalueCutoff = 0.9, readable = TRUE)
+reactome_enrich@result$Description <- paste0(str_sub(
+                                    reactome_enrich@result$Description, 1, 20))
+head(as.data.frame(reactome_enrich))[1:6]
+barplot(reactome_enrich)
+
+reactome_enrich <- pairwise_termsim(reactome_enrich)
+emapplot(reactome_enrich, showCategory = 10)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
